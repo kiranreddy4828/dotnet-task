@@ -1,0 +1,108 @@
+# This pipeline is triggered by any changes pushed to the 'main' branch
+trigger:
+- main
+
+# The pipeline runs on the 'ubuntu-latest' virtual machine image
+pool:
+  vmImage: 'ubuntu-latest'
+
+# Define pipeline variables
+variables:
+  buildConfiguration: 'Release'  # Set the build configuration to 'Release'
+
+# Define the stages of the pipeline
+stages:
+- stage: build
+  displayName: 'Build Stage'
+  jobs:
+  - job: build
+    displayName: 'Build'
+    steps:
+    # Restore NuGet packages
+    - task: DotNetCoreCLI@2
+      displayName: 'Restore NuGet Packages'
+      inputs:
+        command: 'restore'
+        projects: 'dotnet-application/aspnetapp/aspnetapp.csproj'
+
+    # Build the .NET project
+    - task: DotNetCoreCLI@2
+      displayName: 'Build Project'
+      inputs:
+        command: 'build'
+        projects: 'dotnet-application/aspnetapp/aspnetapp.csproj'
+        arguments: '--configuration $(buildConfiguration)'
+        maxCpuCount: true  # Optimize build performance
+
+    # Publish the .NET project
+    - task: DotNetCoreCLI@2
+      displayName: 'Publish Project'
+      inputs:
+        command: 'publish'
+        projects: 'dotnet-application/aspnetapp/aspnetapp.csproj'
+        publishWebProjects: false  # Ensure only specified project is published
+        arguments: '--configuration $(buildConfiguration) --output $(Build.ArtifactStagingDirectory)'
+        zipAfterPublish: true  # Package the output as a ZIP file
+
+    # Build and push the Docker image to Docker Hub
+    - task: Docker@2
+      displayName: 'Build and Push Docker Image'
+      inputs:
+        command: 'buildAndPush'
+        Dockerfile: 'dotnet-application/Dockerfile'
+        containerRegistry: 'DOCKERHUB'  # Use Docker Hub as the registry
+        repository: 'gskr8990/dotnet-sample-app'
+        tags: |
+          $(Build.BuildId)  # Tag with the build ID for traceability
+          latest  # Tag as 'latest' for easy reference
+        dockerRegistryServiceConnection: 'dockerHubConnection'  # Reference to Docker Hub credentials
+
+# Define the test stage
+- stage: test
+  displayName: 'Test Stage'
+  jobs:
+  - job: test
+    displayName: 'Deploy to Test Environment'
+    steps:
+    # Deploy the application to the test environment
+    - task: AzureAppServiceDeployment@4
+      displayName: 'Deploy to Test Environment'
+      inputs:
+        azureSubscription: 'your_azure_subscription'
+        appType: 'webAppLinux'
+        webAppName: 'example-testdotnet'
+        package: '$(System.DefaultWorkingDirectory)/**/*.zip'
+
+    # Run validation tests on the deployed application
+    - task: Bash@3
+      displayName: 'Run Validation Tests'
+      inputs:
+        command: 'inline'
+        script: |
+          curl -X GET http://example-testdotnet.azurewebsites.net
+          # Additional validation tests can be added here
+
+# Define the production stage, dependent on the successful completion of the test stage
+- stage: production
+  displayName: 'Production Stage'
+  dependsOn: test  # Ensure test stage completes before deploying to production
+  jobs:
+  - job: production
+    displayName: 'Deploy to Production Environment'
+    steps:
+    # Deploy the application to the production environment
+    - task: AzureAppServiceDeployment@4
+      displayName: 'Deploy to Production Environment'
+      inputs:
+        azureSubscription: 'your_azure_subscription'
+        appType: 'webAppLinux'
+        webAppName: 'example-production-final'
+        package: '$(System.DefaultWorkingDirectory)/**/*.zip'
+
+    # Run post-deployment validation tests
+    - task: Bash@3
+      displayName: 'Run Post-Deployment Validation Tests'
+      inputs:
+        command: 'inline'
+        script: |
+          curl -X GET http://example-production-final.azurewebsites.net
